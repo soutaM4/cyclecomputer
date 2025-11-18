@@ -135,7 +135,7 @@
             color: #9b59b6;
         }
         
-        /* 設定エリアのスタイル (追加) */
+        /* 設定エリアのスタイル */
         .settings {
             margin-top: 20px;
             padding-top: 15px;
@@ -155,7 +155,7 @@
             background-color: #46627f;
             color: white;
             border: 1px solid #5b7692;
-            appearance: none; /* デフォルトの矢印を非表示 */
+            appearance: none; 
             cursor: pointer;
         }
     </style>
@@ -198,8 +198,9 @@
         <div class="settings">
             <label for="update-interval">GPS更新間隔設定 (ms):</label>
             <select id="update-interval">
+                <option value="100" selected>100 ms (超高頻度)</option>
                 <option value="500">500 ms (高頻度)</option>
-                <option value="1000" selected>1000 ms (標準)</option>
+                <option value="1000">1000 ms (標準)</option>
                 <option value="2000">2000 ms (省電力)</option>
                 <option value="5000">5000 ms (低頻度)</option>
             </select>
@@ -232,7 +233,6 @@
         const timeValue = document.getElementById('time-value');
         const startStopButton = document.getElementById('start-stop-button');
         const statusDiv = document.getElementById('status');
-        // 🚩 設定用DOM要素の取得 (追加)
         const updateIntervalSelect = document.getElementById('update-interval');
 
         // 状態変数
@@ -320,8 +320,8 @@
             } else if (lastPosition && lastTimestamp) {
                 const timeDeltaSeconds = (currentTimestamp - lastTimestamp) / 1000;
                 
-                // 1秒以上の合理的な時間間隔でのみ計算
-                if (timeDeltaSeconds > 0.5) { 
+                // 0.5秒以上の合理的な時間間隔でのみ計算（頻度が高くなると、時間差が小さすぎてノイズが増えやすいため）
+                if (timeDeltaSeconds > 0.05) { // 50ms (0.05秒) 未満の極端な時間差はスキップしてノイズを減らす
                     const speedMps = (segmentDistance * 1000) / timeDeltaSeconds; // km -> m/s
                     currentSpeedKmh = speedMps * SPEED_CONVERSION; // m/s -> km/h
                 }
@@ -393,7 +393,7 @@
                     startTime = new Date();
                 }
                 
-                // 🚩 ユーザーが設定した更新間隔を取得
+                // ユーザーが設定した更新間隔を取得
                 const selectedTimeout = parseInt(updateIntervalSelect.value, 10);
 
                 const options = {
