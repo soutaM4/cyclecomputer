@@ -188,7 +188,7 @@
     </script>
     
     <script>
-        /* --- JavaScript: 処理ロジック --- */
+        /* --- JavaScript: 処理ロジック (速度計算ロジック修正済み) --- */
 
         // DOM要素の取得
         const speedValueLarge = document.getElementById('speed-value-large');
@@ -204,6 +204,7 @@
         let watchId = null; 
         let totalDistanceKm = 0;
         let lastPosition = null; 
+        let lastTimestamp = null; // 速度計算用に追加
         let maxSpeedKmh = 0;
         let speedSamples = 0; 
         let speedSumKmh = 0; 
@@ -212,9 +213,9 @@
 
         // 定数
         const R_EARTH = 6371; 
-        const SPEED_CONVERSION = 3.6; 
+        const SPEED_CONVERSION = 3.6; // m/sをkm/hに変換する定数
 
-        /** 2点間の距離を計算 (km) */
+        /** 2点間の距離を計算 (km) - ハバーサインの公式を使用 */
         function calculateDistance(pos1, pos2) {
             const lat1 = pos1.latitude;
             const lon1 = pos1.longitude;
@@ -251,22 +252,62 @@
         /** Geolocation APIの成功時のコールバック */
         function successCallback(position) {
             const { latitude, longitude, speed } = position.coords;
+            const currentTimestamp = position.timestamp; 
 
-            // 1. 現在速度
+            // 1. 走行距離の計算
+            const currentPosition = { latitude, longitude };
+            let segmentDistance = 0;
             let currentSpeedKmh = 0.0;
-            if (speed !== null && speed >= 0) {
-                currentSpeedKmh = speed * SPEED_CONVERSION;
+
+            if (lastPosition) {
+                segmentDistance = calculateDistance(lastPosition, currentPosition);
+                
+                // ノイズ除去: 0.1m未満の移動や500mを超える異常な移動は無視
+                if (segmentDistance > 0.0001 && segmentDistance < 0.5) { 
+                    totalDistanceKm += segmentDistance;
+                    distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
+                } else {
+                    // ノイズとみなし、このセグメントの速度計算や距離加算は行わないが、位置とタイムスタンプは更新してノイズの連続を避ける
+                    lastPosition = currentPosition;
+                    lastTimestamp = currentTimestamp;
+                    statusDiv.textContent = '計測中... (ノイズフィルタ) 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
+                    return;
+                }
             }
+
+            // 2. 現在速度の計算
+            
+            // a) Geolocation APIのspeedプロパティを優先 (iOS 18など)
+            if (speed !== null && speed > 0.01) { 
+                currentSpeedKmh = speed * SPEED_CONVERSION;
+                
+            // b) Geolocation APIのspeedが使えない場合、距離と時間から速度を計算 (iOS 12など)
+            } else if (lastPosition && lastTimestamp) {
+                const timeDeltaSeconds = (currentTimestamp - lastTimestamp) / 1000;
+                
+                // 1秒以上の合理的な時間間隔でのみ計算
+                if (timeDeltaSeconds > 0.5) { 
+                    const speedMps = (segmentDistance * 1000) / timeDeltaSeconds; // km -> m/s
+                    currentSpeedKmh = speedMps * SPEED_CONVERSION; // m/s -> km/h
+                }
+            }
+            
+            // ノイズ除去: 非現実的な速度は0とする
+            if (currentSpeedKmh > 120) { 
+                currentSpeedKmh = 0.0;
+            }
+
             speedValueLarge.innerHTML = `${currentSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
 
-            // 2. 最高速度の更新
+            // 3. 最高速度の更新
             if (currentSpeedKmh > maxSpeedKmh) {
                 maxSpeedKmh = currentSpeedKmh;
                 maxSpeedValue.innerHTML = `${maxSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
             }
             
-            // 3. 平均速度の計算
-            if (currentSpeedKmh > 0.1) {
+            // 4. 平均速度の計算
+            // 速度がわずかにある場合(0.5km/h以上)のみ、平均速度のサンプルとしてカウント
+            if (currentSpeedKmh > 0.5) { 
                 speedSumKmh += currentSpeedKmh;
                 speedSamples++;
                 
@@ -276,18 +317,9 @@
                 }
             }
 
-            // 4. 走行距離の計算と加算
-            const currentPosition = { latitude, longitude };
-
-            if (lastPosition) {
-                const segmentDistance = calculateDistance(lastPosition, currentPosition);
-                if (segmentDistance > 0.001 && segmentDistance < 0.5) {
-                    totalDistanceKm += segmentDistance;
-                    distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
-                }
-            }
-
+            // 5. 次回のために現在の位置とタイムスタンプを保存
             lastPosition = currentPosition;
+            lastTimestamp = currentTimestamp;
             statusDiv.textContent = '計測中... 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
         }
 
@@ -317,11 +349,13 @@
         function startTracking() {
             if ('geolocation' in navigator) {
                 if (!isTracking) {
+                    // 全てのリセット
                     totalDistanceKm = 0;
                     maxSpeedKmh = 0;
                     speedSamples = 0;
                     speedSumKmh = 0;
                     lastPosition = null;
+                    lastTimestamp = null; // リセット
                     startTime = new Date();
                 }
 
@@ -362,6 +396,7 @@
             
             isTracking = false;
             startTime = null;
+            lastTimestamp = null; 
             startStopButton.textContent = '計測開始';
             startStopButton.style.backgroundColor = '#e74c3c';
             statusDiv.textContent = `計測停止しました。総走行距離: ${totalDistanceKm.toFixed(2)}km`;
