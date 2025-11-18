@@ -134,12 +134,36 @@
             font-style: italic;
             color: #9b59b6;
         }
+        
+        /* 設定エリアのスタイル (追加) */
+        .settings {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #46627f;
+            text-align: left;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .settings label {
+            font-size: 0.8em;
+            color: #bdc3c7;
+        }
+        .settings select {
+            padding: 8px;
+            border-radius: 5px;
+            background-color: #46627f;
+            color: white;
+            border: 1px solid #5b7692;
+            appearance: none; /* デフォルトの矢印を非表示 */
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h1>off-Sycom</h1>
+        <h1>サイクルコンピュータ</h1>
 
         <div id="main-speed-display">
             <span class="label">現在の速度</span>
@@ -170,7 +194,17 @@
 
         <button id="start-stop-button">計測開始</button>
         <div id="status">位置情報サービスを開始してください。</div>
-    </div>
+        
+        <div class="settings">
+            <label for="update-interval">GPS更新間隔設定 (ms):</label>
+            <select id="update-interval">
+                <option value="500">500 ms (高頻度)</option>
+                <option value="1000" selected>1000 ms (標準)</option>
+                <option value="2000">2000 ms (省電力)</option>
+                <option value="5000">5000 ms (低頻度)</option>
+            </select>
+        </div>
+        </div>
 
     <script>
         if ('serviceWorker' in navigator) {
@@ -188,7 +222,7 @@
     </script>
     
     <script>
-        /* --- JavaScript: 処理ロジック (速度計算ロジック修正済み) --- */
+        /* --- JavaScript: 処理ロジック (設定対応および速度計算ロジック修正済み) --- */
 
         // DOM要素の取得
         const speedValueLarge = document.getElementById('speed-value-large');
@@ -198,13 +232,15 @@
         const timeValue = document.getElementById('time-value');
         const startStopButton = document.getElementById('start-stop-button');
         const statusDiv = document.getElementById('status');
+        // 🚩 設定用DOM要素の取得 (追加)
+        const updateIntervalSelect = document.getElementById('update-interval');
 
         // 状態変数
         let isTracking = false;
         let watchId = null; 
         let totalDistanceKm = 0;
         let lastPosition = null; 
-        let lastTimestamp = null; // 速度計算用に追加
+        let lastTimestamp = null; 
         let maxSpeedKmh = 0;
         let speedSamples = 0; 
         let speedSumKmh = 0; 
@@ -213,7 +249,7 @@
 
         // 定数
         const R_EARTH = 6371; 
-        const SPEED_CONVERSION = 3.6; // m/sをkm/hに変換する定数
+        const SPEED_CONVERSION = 3.6; 
 
         /** 2点間の距離を計算 (km) - ハバーサインの公式を使用 */
         function calculateDistance(pos1, pos2) {
@@ -267,7 +303,6 @@
                     totalDistanceKm += segmentDistance;
                     distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
                 } else {
-                    // ノイズとみなし、このセグメントの速度計算や距離加算は行わないが、位置とタイムスタンプは更新してノイズの連続を避ける
                     lastPosition = currentPosition;
                     lastTimestamp = currentTimestamp;
                     statusDiv.textContent = '計測中... (ノイズフィルタ) 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
@@ -306,7 +341,6 @@
             }
             
             // 4. 平均速度の計算
-            // 速度がわずかにある場合(0.5km/h以上)のみ、平均速度のサンプルとしてカウント
             if (currentSpeedKmh > 0.5) { 
                 speedSumKmh += currentSpeedKmh;
                 speedSamples++;
@@ -355,14 +389,19 @@
                     speedSamples = 0;
                     speedSumKmh = 0;
                     lastPosition = null;
-                    lastTimestamp = null; // リセット
+                    lastTimestamp = null; 
                     startTime = new Date();
                 }
+                
+                // 🚩 ユーザーが設定した更新間隔を取得
+                const selectedTimeout = parseInt(updateIntervalSelect.value, 10);
 
                 const options = {
                     enableHighAccuracy: true,
-                    timeout: 5000,
-                    maximumAge: 0
+                    // ユーザーが選択した値をtimeoutに設定
+                    timeout: selectedTimeout, 
+                    // maximumAgeは非常に短く設定し、常に新しい位置情報を取得するようOSに促す
+                    maximumAge: 50 
                 };
 
                 watchId = navigator.geolocation.watchPosition(
@@ -371,7 +410,7 @@
                     options
                 );
 
-                timerInterval = setInterval(updateTime, 1000);
+                timerInterval = setInterval(updateTime, 1000); 
 
                 isTracking = true;
                 startStopButton.textContent = '計測停止 (リセット)';
@@ -437,4 +476,3 @@
     </script>
 </body>
 </html>
-
