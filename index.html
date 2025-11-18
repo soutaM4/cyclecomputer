@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>オフライン サイクルコンピュータ</title>
+
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CycleComp">
+    <link rel="manifest" href="/manifest.json">
+    
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180">
+
+    <style>
+        /* --- CSS: スタイリング --- */
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #2c3e50; /* ダークブルー */
+            color: #ecf0f1; /* 明るいグレー */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+            overflow: hidden; 
+        }
+
+        .container {
+            background-color: #34495e; 
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            width: 90%;
+            max-width: 450px;
+        }
+
+        h1 {
+            color: #f1c40f; 
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        /* 1. 現在速度 (メイン表示) */
+        #main-speed-display {
+            background-color: #e74c3c; 
+            color: white;
+            padding: 15px 5px 10px 5px; 
+            border-radius: 10px;
+            margin-bottom: 25px; 
+        }
+
+        #speed-value-large {
+            font-size: 5.5em; 
+            font-weight: bold;
+            line-height: 1.1;
+        }
+
+        #speed-value-large .unit {
+            font-size: 0.35em; 
+            color: white;
+            margin-left: 5px;
+            vertical-align: top;
+        }
+        
+        #main-speed-display .label {
+            font-size: 0.8em;
+            color: #f1c40f; 
+            display: block;
+            margin-bottom: 0px;
+        }
+
+        /* 2. その他のデータ表示 (2x2 均等グリッド) */
+        .grid-display {
+            display: grid;
+            grid-template-columns: 1fr 1fr; 
+            grid-template-rows: auto auto;
+            gap: 15px; 
+            margin-bottom: 25px;
+        }
+
+        .data-display {
+            background-color: #46627f;
+            padding: 15px 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .label {
+            font-size: 0.7em;
+            color: #bdc3c7;
+            display: block;
+            margin-bottom: 3px;
+            font-weight: lighter;
+            text-transform: uppercase;
+        }
+
+        .value {
+            font-size: 1.6em;
+            font-weight: bold;
+            color: #ecf0f1;
+            line-height: 1.2;
+        }
+
+        .unit {
+            font-size: 0.6em;
+            color: #f39c12; 
+            margin-left: 3px;
+        }
+
+        /* ボタンとステータス */
+        button {
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-transform: uppercase;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+            width: 100%;
+        }
+
+        button:hover {
+            background-color: #c0392b;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-style: italic;
+            color: #9b59b6;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>サイクルコンピュータ</h1>
+
+        <div id="main-speed-display">
+            <span class="label">現在の速度</span>
+            <div id="speed-value-large">0.0<span class="unit">km/h</span></div>
+        </div>
+        
+        <div class="grid-display">
+            <div class="data-display" id="distance-container">
+                <span class="label">走行距離 (DISTANCE)</span>
+                <div class="value" id="distance-value">0.00<span class="unit">km</span></div>
+            </div>
+
+            <div class="data-display" id="time-container">
+                <span class="label">経過タイム (TIME)</span>
+                <div class="value" id="time-value">00:00:00</div>
+            </div>
+
+            <div class="data-display" id="max-speed-container">
+                <span class="label">最高速度 (MAX SPEED)</span>
+                <div class="value" id="max-speed-value">0.0<span class="unit">km/h</span></div>
+            </div>
+            
+            <div class="data-display" id="avg-speed-container">
+                <span class="label">平均速度 (AVG SPEED)</span>
+                <div class="value" id="avg-speed-value">0.0<span class="unit">km/h</span></div>
+            </div>
+        </div>
+
+        <button id="start-stop-button">計測開始</button>
+        <div id="status">位置情報サービスを開始してください。</div>
+    </div>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                // sw.jsを登録
+                navigator.serviceWorker.register('/sw.js')
+                    .then(reg => {
+                        console.log('Service Worker registered! Scope:', reg.scope);
+                    })
+                    .catch(err => {
+                        console.log('Service Worker registration failed:', err);
+                    });
+            });
+        }
+    </script>
+    
+    <script>
+        /* --- JavaScript: 処理ロジック --- */
+
+        // DOM要素の取得
+        const speedValueLarge = document.getElementById('speed-value-large');
+        const distanceValue = document.getElementById('distance-value');
+        const maxSpeedValue = document.getElementById('max-speed-value');
+        const avgSpeedValue = document.getElementById('avg-speed-value');
+        const timeValue = document.getElementById('time-value');
+        const startStopButton = document.getElementById('start-stop-button');
+        const statusDiv = document.getElementById('status');
+
+        // 状態変数
+        let isTracking = false;
+        let watchId = null; 
+        let totalDistanceKm = 0;
+        let lastPosition = null; 
+        let maxSpeedKmh = 0;
+        let speedSamples = 0; 
+        let speedSumKmh = 0; 
+        let startTime = null; 
+        let timerInterval = null; 
+
+        // 定数
+        const R_EARTH = 6371; 
+        const SPEED_CONVERSION = 3.6; 
+
+        /** 2点間の距離を計算 (km) */
+        function calculateDistance(pos1, pos2) {
+            const lat1 = pos1.latitude;
+            const lon1 = pos1.longitude;
+            const lat2 = pos2.latitude;
+            const lon2 = pos2.longitude;
+
+            const dLat = (lat2 - lat1) * (Math.PI / 180);
+            const dLon = (lon2 - lon1) * (Math.PI / 180);
+
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R_EARTH * c;
+        }
+
+        /** 経過タイムを更新する関数 */
+        function updateTime() {
+            if (startTime === null) return;
+            
+            const elapsed = new Date().getTime() - startTime.getTime();
+            
+            const seconds = Math.floor(elapsed / 1000) % 60;
+            const minutes = Math.floor(elapsed / (1000 * 60)) % 60;
+            const hours = Math.floor(elapsed / (1000 * 60 * 60));
+
+            const format = (num) => String(num).padStart(2, '0');
+            
+            timeValue.textContent = `${format(hours)}:${format(minutes)}:${format(seconds)}`;
+        }
+
+        /** Geolocation APIの成功時のコールバック */
+        function successCallback(position) {
+            const { latitude, longitude, speed } = position.coords;
+
+            // 1. 現在速度
+            let currentSpeedKmh = 0.0;
+            if (speed !== null && speed >= 0) {
+                currentSpeedKmh = speed * SPEED_CONVERSION;
+            }
+            speedValueLarge.innerHTML = `${currentSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
+
+            // 2. 最高速度の更新
+            if (currentSpeedKmh > maxSpeedKmh) {
+                maxSpeedKmh = currentSpeedKmh;
+                maxSpeedValue.innerHTML = `${maxSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
+            }
+            
+            // 3. 平均速度の計算
+            if (currentSpeedKmh > 0.1) {
+                speedSumKmh += currentSpeedKmh;
+                speedSamples++;
+                
+                if (speedSamples > 0) {
+                    const avgSpeed = speedSumKmh / speedSamples;
+                    avgSpeedValue.innerHTML = `${avgSpeed.toFixed(1)}<span class="unit">km/h</span>`;
+                }
+            }
+
+            // 4. 走行距離の計算と加算
+            const currentPosition = { latitude, longitude };
+
+            if (lastPosition) {
+                const segmentDistance = calculateDistance(lastPosition, currentPosition);
+                if (segmentDistance > 0.001 && segmentDistance < 0.5) {
+                    totalDistanceKm += segmentDistance;
+                    distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
+                }
+            }
+
+            lastPosition = currentPosition;
+            statusDiv.textContent = '計測中... 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
+        }
+
+        /** Geolocation APIのエラー時のコールバック */
+        function errorCallback(error) {
+            console.error('位置情報取得エラー:', error);
+            let errorMessage = '';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage = '位置情報の利用が許可されていません。';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage = '位置情報が利用できません。';
+                    break;
+                case error.TIMEOUT:
+                    errorMessage = '位置情報の取得がタイムアウトしました。';
+                    break;
+                default:
+                    errorMessage = '不明な位置情報エラーが発生しました。';
+                    break;
+            }
+            statusDiv.textContent = `エラー: ${errorMessage}`;
+            stopTracking();
+        }
+
+        /** 計測を開始する */
+        function startTracking() {
+            if ('geolocation' in navigator) {
+                if (!isTracking) {
+                    totalDistanceKm = 0;
+                    maxSpeedKmh = 0;
+                    speedSamples = 0;
+                    speedSumKmh = 0;
+                    lastPosition = null;
+                    startTime = new Date();
+                }
+
+                const options = {
+                    enableHighAccuracy: true,
+                    timeout: 5000,
+                    maximumAge: 0
+                };
+
+                watchId = navigator.geolocation.watchPosition(
+                    successCallback,
+                    errorCallback,
+                    options
+                );
+
+                timerInterval = setInterval(updateTime, 1000);
+
+                isTracking = true;
+                startStopButton.textContent = '計測停止 (リセット)';
+                startStopButton.style.backgroundColor = '#2ecc71';
+                statusDiv.textContent = '位置情報取得中...';
+
+            } else {
+                statusDiv.textContent = 'エラー: このブラウザはGeolocation APIに対応していません。';
+            }
+        }
+
+        /** 計測を停止する */
+        function stopTracking() {
+            if (watchId !== null) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            if (timerInterval !== null) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            
+            isTracking = false;
+            startTime = null;
+            startStopButton.textContent = '計測開始';
+            startStopButton.style.backgroundColor = '#e74c3c';
+            statusDiv.textContent = `計測停止しました。総走行距離: ${totalDistanceKm.toFixed(2)}km`;
+            
+            // 最終表示更新
+            distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
+            maxSpeedValue.innerHTML = `${maxSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
+            if (speedSamples > 0) {
+                const avgSpeed = speedSumKmh / speedSamples;
+                avgSpeedValue.innerHTML = `${avgSpeed.toFixed(1)}<span class="unit">km/h</span>`;
+            } else {
+                avgSpeedValue.innerHTML = `0.0<span class="unit">km/h</span>`;
+            }
+        }
+
+        /** 計測の開始/停止を切り替える関数 */
+        function toggleTracking() {
+            if (isTracking) {
+                stopTracking();
+            } else {
+                startTracking();
+            }
+        }
+
+        // イベントリスナーの設定
+        startStopButton.addEventListener('click', toggleTracking);
+
+        // 初期表示
+        function initializeDisplay() {
+            distanceValue.innerHTML = `0.00<span class="unit">km</span>`;
+            maxSpeedValue.innerHTML = `0.0<span class="unit">km/h</span>`;
+            avgSpeedValue.innerHTML = `0.0<span class="unit">km/h</span>`;
+            timeValue.textContent = `00:00:00`;
+            speedValueLarge.innerHTML = `0.0<span class="unit">km/h</span>`;
+        }
+        initializeDisplay();
+
+    </script>
+</body>
+</html>
