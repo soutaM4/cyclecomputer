@@ -15,7 +15,7 @@
     <style>
         /* --- CSS: スタイリング --- */
         body {
-            font-family: 'Arial', sans-serif;
+            font-family: 'Arial', sans-serif';
             background-color: #2c3e50; /* ダークブルー */
             color: #ecf0f1; /* 明るいグレー */
             display: flex;
@@ -37,20 +37,6 @@
             width: 90%;
             max-width: 450px;
         }
-        
-        /* --- 追記: ヘッダー画像用スタイル --- */
-        .header-image {
-            margin-bottom: 20px; 
-        }
-
-        .header-image img {
-            width: 100px; /* 画像サイズを調整 */
-            height: 100px;
-            border-radius: 10px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-        }
-        /* ---------------------------------- */
-
 
         h1 {
             color: #f1c40f; 
@@ -148,15 +134,35 @@
             font-style: italic;
             color: #9b59b6;
         }
+        
+        /* 設定エリアのスタイル */
+        .settings {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #46627f;
+            text-align: left;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .settings label {
+            font-size: 0.8em;
+            color: #bdc3c7;
+        }
+        .settings select {
+            padding: 8px;
+            border-radius: 5px;
+            background-color: #46627f;
+            color: white;
+            border: 1px solid #5b7692;
+            appearance: none; 
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <div class="header-image">
-            <img src="/icon-192x192.png" alt="サイクルコンピュータのアイコン">
-        </div>
-        
         <h1>サイクルコンピュータ</h1>
 
         <div id="main-speed-display">
@@ -188,6 +194,17 @@
 
         <button id="start-stop-button">計測開始</button>
         <div id="status">位置情報サービスを開始してください。</div>
+        
+        <div class="settings">
+            <label for="update-interval">GPS更新間隔設定 (ms):</label>
+            <select id="update-interval">
+                <option value="100" selected>100 ms (超高頻度)</option>
+                <option value="500">500 ms (高頻度)</option>
+                <option value="1000">1000 ms (標準)</option>
+                <option value="2000">2000 ms (省電力)</option>
+                <option value="5000">5000 ms (低頻度)</option>
+            </select>
+        </div>
     </div>
 
     <script>
@@ -206,7 +223,7 @@
     </script>
     
     <script>
-        /* --- JavaScript: 処理ロジック --- */
+        /* --- JavaScript: 処理ロジック (内部制限を解除して最大限の頻度で計算) --- */
 
         // DOM要素の取得
         const speedValueLarge = document.getElementById('speed-value-large');
@@ -216,12 +233,14 @@
         const timeValue = document.getElementById('time-value');
         const startStopButton = document.getElementById('start-stop-button');
         const statusDiv = document.getElementById('status');
+        const updateIntervalSelect = document.getElementById('update-interval');
 
         // 状態変数
         let isTracking = false;
         let watchId = null; 
         let totalDistanceKm = 0;
         let lastPosition = null; 
+        let lastTimestamp = null; 
         let maxSpeedKmh = 0;
         let speedSamples = 0; 
         let speedSumKmh = 0; 
@@ -232,7 +251,7 @@
         const R_EARTH = 6371; 
         const SPEED_CONVERSION = 3.6; 
 
-        /** 2点間の距離を計算 (km) */
+        /** 2点間の距離を計算 (km) - ハバーサインの公式を使用 */
         function calculateDistance(pos1, pos2) {
             const lat1 = pos1.latitude;
             const lon1 = pos1.longitude;
@@ -269,22 +288,60 @@
         /** Geolocation APIの成功時のコールバック */
         function successCallback(position) {
             const { latitude, longitude, speed } = position.coords;
+            const currentTimestamp = position.timestamp; 
 
-            // 1. 現在速度
+            // 1. 走行距離の計算
+            const currentPosition = { latitude, longitude };
+            let segmentDistance = 0;
             let currentSpeedKmh = 0.0;
-            if (speed !== null && speed >= 0) {
-                currentSpeedKmh = speed * SPEED_CONVERSION;
+
+            if (lastPosition) {
+                segmentDistance = calculateDistance(lastPosition, currentPosition);
+                
+                // ノイズ除去: 0.1m未満の移動や500mを超える異常な移動は無視
+                if (segmentDistance > 0.0001 && segmentDistance < 0.5) { 
+                    totalDistanceKm += segmentDistance;
+                    distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
+                } else {
+                    lastPosition = currentPosition;
+                    lastTimestamp = currentTimestamp;
+                    statusDiv.textContent = '計測中... (ノイズフィルタ) 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
+                    return;
+                }
             }
+
+            // 2. 現在速度の計算
+            
+            // a) Geolocation APIのspeedプロパティを優先 (iOS 18など)
+            if (speed !== null && speed > 0.01) { 
+                currentSpeedKmh = speed * SPEED_CONVERSION;
+                
+            // b) Geolocation APIのspeedが使えない場合、距離と時間から速度を計算 (iOS 12など)
+            } else if (lastPosition && lastTimestamp) {
+                const timeDeltaSeconds = (currentTimestamp - lastTimestamp) / 1000;
+                
+                // 🚩 内部制限を解除: 0以外の時間差があれば常に計算を実行
+                if (timeDeltaSeconds > 0.0) { 
+                    const speedMps = (segmentDistance * 1000) / timeDeltaSeconds; 
+                    currentSpeedKmh = speedMps * SPEED_CONVERSION; 
+                }
+            }
+            
+            // ノイズ除去: 非現実的な速度は0とする
+            if (currentSpeedKmh > 120) { 
+                currentSpeedKmh = 0.0;
+            }
+
             speedValueLarge.innerHTML = `${currentSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
 
-            // 2. 最高速度の更新
+            // 3. 最高速度の更新
             if (currentSpeedKmh > maxSpeedKmh) {
                 maxSpeedKmh = currentSpeedKmh;
                 maxSpeedValue.innerHTML = `${maxSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
             }
             
-            // 3. 平均速度の計算
-            if (currentSpeedKmh > 0.1) {
+            // 4. 平均速度の計算
+            if (currentSpeedKmh > 0.5) { 
                 speedSumKmh += currentSpeedKmh;
                 speedSamples++;
                 
@@ -294,18 +351,9 @@
                 }
             }
 
-            // 4. 走行距離の計算と加算
-            const currentPosition = { latitude, longitude };
-
-            if (lastPosition) {
-                const segmentDistance = calculateDistance(lastPosition, currentPosition);
-                if (segmentDistance > 0.001 && segmentDistance < 0.5) {
-                    totalDistanceKm += segmentDistance;
-                    distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
-                }
-            }
-
+            // 5. 次回のために現在の位置とタイムスタンプを保存
             lastPosition = currentPosition;
+            lastTimestamp = currentTimestamp;
             statusDiv.textContent = '計測中... 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
         }
 
@@ -335,18 +383,25 @@
         function startTracking() {
             if ('geolocation' in navigator) {
                 if (!isTracking) {
+                    // 全てのリセット
                     totalDistanceKm = 0;
                     maxSpeedKmh = 0;
                     speedSamples = 0;
                     speedSumKmh = 0;
                     lastPosition = null;
+                    lastTimestamp = null; 
                     startTime = new Date();
                 }
+                
+                // ユーザーが設定した更新間隔を取得
+                const selectedTimeout = parseInt(updateIntervalSelect.value, 10);
 
                 const options = {
                     enableHighAccuracy: true,
-                    timeout: 5000,
-                    maximumAge: 0
+                    // ユーザーが選択した値をtimeoutに設定
+                    timeout: selectedTimeout, 
+                    // maximumAgeは非常に短く設定し、常に新しい位置情報を取得するようOSに促す
+                    maximumAge: 50 
                 };
 
                 watchId = navigator.geolocation.watchPosition(
@@ -355,7 +410,7 @@
                     options
                 );
 
-                timerInterval = setInterval(updateTime, 1000);
+                timerInterval = setInterval(updateTime, 1000); 
 
                 isTracking = true;
                 startStopButton.textContent = '計測停止 (リセット)';
@@ -380,6 +435,7 @@
             
             isTracking = false;
             startTime = null;
+            lastTimestamp = null; 
             startStopButton.textContent = '計測開始';
             startStopButton.style.backgroundColor = '#e74c3c';
             statusDiv.textContent = `計測停止しました。総走行距離: ${totalDistanceKm.toFixed(2)}km`;
