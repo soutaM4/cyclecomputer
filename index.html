@@ -112,21 +112,39 @@
         }
 
         /* ボタンとステータス */
+        .button-group {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
         button {
             background-color: #e74c3c;
             color: white;
             border: none;
-            padding: 10px 20px;
+            padding: 10px 10px;
             text-transform: uppercase;
             border-radius: 5px;
             cursor: pointer;
             font-weight: bold;
             transition: background-color 0.3s;
-            width: 100%;
+            flex-grow: 1; /* グループ内で均等な幅を占める */
+        }
+        
+        #start-button {
+            background-color: #2ecc71; /* 緑 */
+        }
+        #pause-resume-button {
+            background-color: #f1c40f; /* 黄色 */
+            color: #34495e;
+        }
+        #stop-reset-button {
+            background-color: #e74c3c; /* 赤 */
         }
 
         button:hover {
-            background-color: #c0392b;
+            opacity: 0.8;
         }
 
         #status {
@@ -191,8 +209,15 @@
                 <div class="value" id="avg-speed-value">0.0<span class="unit">km/h</span></div>
             </div>
         </div>
+        
+        <div class="button-group">
+            <button id="start-button">計測開始</button>
+        </div>
+        <div class="button-group" style="display: none;" id="active-buttons">
+            <button id="pause-resume-button">一時停止</button>
+            <button id="stop-reset-button">停止・リセット</button>
+        </div>
 
-        <button id="start-stop-button">計測開始</button>
         <div id="status">位置情報サービスを開始してください。</div>
         
         <div class="settings">
@@ -208,6 +233,7 @@
         </div>
 
     <script>
+        // Service Worker の登録 (変更なし)
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 // sw.jsを登録
@@ -223,7 +249,7 @@
     </script>
     
     <script>
-        /* --- JavaScript: 処理ロジック (設定対応および速度計算ロジック修正済み) --- */
+        /* --- JavaScript: 処理ロジック (一時停止機能を追加) --- */
 
         // DOM要素の取得
         const speedValueLarge = document.getElementById('speed-value-large');
@@ -231,28 +257,70 @@
         const maxSpeedValue = document.getElementById('max-speed-value');
         const avgSpeedValue = document.getElementById('avg-speed-value');
         const timeValue = document.getElementById('time-value');
-        const startStopButton = document.getElementById('start-stop-button');
+        
+        // ボタンの取得
+        const startButton = document.getElementById('start-button');
+        const pauseResumeButton = document.getElementById('pause-resume-button');
+        const stopResetButton = document.getElementById('stop-reset-button');
+        const activeButtonContainer = document.getElementById('active-buttons'); // 新しいボタンコンテナ
+
         const statusDiv = document.getElementById('status');
         const updateIntervalSelect = document.getElementById('update-interval');
 
-        // 状態変数
-        let isTracking = false;
-        let watchId = null; 
-        let totalDistanceKm = 0;
-        let lastPosition = null; 
-        let lastTimestamp = null; 
-        let maxSpeedKmh = 0;
-        let speedSamples = 0; 
-        let speedSumKmh = 0; 
-        let startTime = null; 
-        let timerInterval = null; 
+        // 状態変数 (変更・追加あり)
+        let isStarted = false;      // 計測が開始されたかどうか (一度でもスタートしたか)
+        let isPaused = false;       // 一時停止中かどうか
+        let watchId = null;         // GPS監視ID
+        let totalDistanceKm = 0;    // 走行距離
+        let lastPosition = null;    // 前回の位置
+        let lastTimestamp = null;   // 前回のタイムスタンプ
+        let maxSpeedKmh = 0;        // 最高速度
+        let speedSamples = 0;       // 平均速度サンプル数
+        let speedSumKmh = 0;        // 平均速度合計
+        let startTime = null;       // 計測開始時間
+        let timerInterval = null;   // タイマーID
+        let wakeLock = null;        // Wake Lock オブジェクト
 
+        // 一時停止時間の管理 (NEW)
+        let pausedTimeMs = 0;       // 合計一時停止時間 (ms)
+        let pauseStart = null;      // 一時停止を開始した時間 (ms)
+        
         // 定数
         const R_EARTH = 6371; 
         const SPEED_CONVERSION = 3.6; 
 
-        /** 2点間の距離を計算 (km) - ハバーサインの公式を使用 */
+        // --- Wake Lock API (変更なし) ---
+
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                if (wakeLock) return; // 既にロックを取得していたら何もしない
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => {
+                        console.log('Wake Lock が解放されました');
+                        wakeLock = null;
+                    });
+                    console.log('Wake Lock が有効になりました');
+                } catch (err) {
+                    console.error('Wake Lock の要求に失敗:', err);
+                }
+            } else {
+                console.log('Wake Lock API はサポートされていません');
+            }
+        }
+
+        async function releaseWakeLock() {
+            if (wakeLock) {
+                await wakeLock.release();
+                console.log('Wake Lock が解放されました');
+                wakeLock = null;
+            }
+        }
+
+        // --- 距離と速度の計算ロジック (変更なし) ---
+
         function calculateDistance(pos1, pos2) {
+            // ... (前回のコードから変更なし)
             const lat1 = pos1.latitude;
             const lon1 = pos1.longitude;
             const lat2 = pos2.latitude;
@@ -270,11 +338,25 @@
             return R_EARTH * c;
         }
 
-        /** 経過タイムを更新する関数 */
+        /** 経過タイムを更新する関数 (一時停止時間を考慮) */
         function updateTime() {
             if (startTime === null) return;
             
-            const elapsed = new Date().getTime() - startTime.getTime();
+            // 現在の経過時間から合計一時停止時間を差し引く
+            const currentTime = new Date().getTime();
+            let elapsed = currentTime - startTime.getTime();
+
+            if (isPaused && pauseStart) {
+                // ポーズ中の場合、現時点までの経過時間から、ポーズ開始から現在までの時間を引く
+                const currentPauseDuration = currentTime - pauseStart;
+                elapsed = elapsed - (pausedTimeMs + currentPauseDuration);
+            } else {
+                // ポーズ中でない場合、累積ポーズ時間のみを引く
+                elapsed -= pausedTimeMs;
+            }
+
+            // elapsedが負になるのを防ぐ
+            if (elapsed < 0) elapsed = 0; 
             
             const seconds = Math.floor(elapsed / 1000) % 60;
             const minutes = Math.floor(elapsed / (1000 * 60)) % 60;
@@ -285,12 +367,14 @@
             timeValue.textContent = `${format(hours)}:${format(minutes)}:${format(seconds)}`;
         }
 
-        /** Geolocation APIの成功時のコールバック */
         function successCallback(position) {
+            // 一時停止中はGPSデータ処理をスキップ
+            if (isPaused) return; 
+            
             const { latitude, longitude, speed } = position.coords;
             const currentTimestamp = position.timestamp; 
 
-            // 1. 走行距離の計算
+            // ... (距離、速度、最高速度、平均速度の計算ロジックは変更なし)
             const currentPosition = { latitude, longitude };
             let segmentDistance = 0;
             let currentSpeedKmh = 0.0;
@@ -298,7 +382,6 @@
             if (lastPosition) {
                 segmentDistance = calculateDistance(lastPosition, currentPosition);
                 
-                // ノイズ除去: 0.1m未満の移動や500mを超える異常な移動は無視
                 if (segmentDistance > 0.0001 && segmentDistance < 0.5) { 
                     totalDistanceKm += segmentDistance;
                     distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
@@ -310,37 +393,28 @@
                 }
             }
 
-            // 2. 現在速度の計算
-            
-            // a) Geolocation APIのspeedプロパティを優先 (iOS 18など)
             if (speed !== null && speed > 0.01) { 
                 currentSpeedKmh = speed * SPEED_CONVERSION;
-                
-            // b) Geolocation APIのspeedが使えない場合、距離と時間から速度を計算 (iOS 12など)
             } else if (lastPosition && lastTimestamp) {
                 const timeDeltaSeconds = (currentTimestamp - lastTimestamp) / 1000;
                 
-                // 0.5秒以上の合理的な時間間隔でのみ計算（頻度が高くなると、時間差が小さすぎてノイズが増えやすいため）
-                if (timeDeltaSeconds > 0.05) { // 50ms (0.05秒) 未満の極端な時間差はスキップしてノイズを減らす
-                    const speedMps = (segmentDistance * 1000) / timeDeltaSeconds; // km -> m/s
-                    currentSpeedKmh = speedMps * SPEED_CONVERSION; // m/s -> km/h
+                if (timeDeltaSeconds > 0.05) { 
+                    const speedMps = (segmentDistance * 1000) / timeDeltaSeconds; 
+                    currentSpeedKmh = speedMps * SPEED_CONVERSION; 
                 }
             }
             
-            // ノイズ除去: 非現実的な速度は0とする
             if (currentSpeedKmh > 120) { 
                 currentSpeedKmh = 0.0;
             }
 
             speedValueLarge.innerHTML = `${currentSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
 
-            // 3. 最高速度の更新
             if (currentSpeedKmh > maxSpeedKmh) {
                 maxSpeedKmh = currentSpeedKmh;
                 maxSpeedValue.innerHTML = `${maxSpeedKmh.toFixed(1)}<span class="unit">km/h</span>`;
             }
             
-            // 4. 平均速度の計算
             if (currentSpeedKmh > 0.5) { 
                 speedSumKmh += currentSpeedKmh;
                 speedSamples++;
@@ -351,13 +425,11 @@
                 }
             }
 
-            // 5. 次回のために現在の位置とタイムスタンプを保存
             lastPosition = currentPosition;
             lastTimestamp = currentTimestamp;
             statusDiv.textContent = '計測中... 精度: ' + position.coords.accuracy.toFixed(0) + 'm';
         }
 
-        /** Geolocation APIのエラー時のコールバック */
         function errorCallback(error) {
             console.error('位置情報取得エラー:', error);
             let errorMessage = '';
@@ -376,13 +448,15 @@
                     break;
             }
             statusDiv.textContent = `エラー: ${errorMessage}`;
-            stopTracking();
+            // エラーが発生した場合、停止処理を行う
+            stopTracking(); 
         }
 
         /** 計測を開始する */
         function startTracking() {
             if ('geolocation' in navigator) {
-                if (!isTracking) {
+                // 初回スタート時の初期化
+                if (!isStarted) {
                     // 全てのリセット
                     totalDistanceKm = 0;
                     maxSpeedKmh = 0;
@@ -390,17 +464,22 @@
                     speedSumKmh = 0;
                     lastPosition = null;
                     lastTimestamp = null; 
-                    startTime = new Date();
+                    startTime = new Date(); // 計測開始時刻を記録
+                    pausedTimeMs = 0;
+                    
+                    initializeDisplay(); // 表示をリセット
+                    isStarted = true;
                 }
+                
+                // 画面スリープ防止ロックを要求
+                requestWakeLock();
                 
                 // ユーザーが設定した更新間隔を取得
                 const selectedTimeout = parseInt(updateIntervalSelect.value, 10);
 
                 const options = {
                     enableHighAccuracy: true,
-                    // ユーザーが選択した値をtimeoutに設定
                     timeout: selectedTimeout, 
-                    // maximumAgeは非常に短く設定し、常に新しい位置情報を取得するようOSに促す
                     maximumAge: 50 
                 };
 
@@ -410,20 +489,25 @@
                     options
                 );
 
+                // タイマーを起動
                 timerInterval = setInterval(updateTime, 1000); 
 
-                isTracking = true;
-                startStopButton.textContent = '計測停止 (リセット)';
-                startStopButton.style.backgroundColor = '#2ecc71';
+                isPaused = false;
+                
+                // UI更新
+                updateButtonState();
                 statusDiv.textContent = '位置情報取得中...';
 
             } else {
                 statusDiv.textContent = 'エラー: このブラウザはGeolocation APIに対応していません。';
             }
         }
+        
+        /** 計測を一時停止する (NEW) */
+        function pauseTracking() {
+            if (!isStarted || isPaused) return; // 開始されていない、または既に一時停止中ならスキップ
 
-        /** 計測を停止する */
-        function stopTracking() {
+            // 1. GPSとタイマーを停止
             if (watchId !== null) {
                 navigator.geolocation.clearWatch(watchId);
                 watchId = null;
@@ -433,12 +517,63 @@
                 timerInterval = null;
             }
             
-            isTracking = false;
+            // 2. 画面スリープ防止ロックを解放
+            releaseWakeLock();
+
+            // 3. 一時停止のタイムスタンプを記録
+            pauseStart = new Date().getTime();
+            
+            // 4. 速度表示を0にリセット
+            speedValueLarge.innerHTML = `0.0<span class="unit">km/h</span>`;
+
+            // 5. 状態を更新
+            isPaused = true;
+
+            // UI更新
+            updateButtonState();
+            statusDiv.textContent = '一時停止中... [再開]を押してください。';
+        }
+
+        /** 計測を再開する (NEW) */
+        function resumeTracking() {
+            if (!isStarted || !isPaused) return; // 開始されていない、または一時停止中でないならスキップ
+
+            // 1. ポーズ時間の蓄積
+            if (pauseStart !== null) {
+                pausedTimeMs += new Date().getTime() - pauseStart;
+                pauseStart = null;
+            }
+
+            // 2. GPSとタイマーを再開
+            startTracking(); 
+
+            // 3. 状態を更新
+            isPaused = false;
+            
+            // UI更新はstartTracking()内で実行される
+        }
+
+        /** 計測を完全に停止し、データをリセットする */
+        function stopTracking() {
+            // GPSとタイマーをクリア (ポーズ状態からでも実行可能)
+            if (watchId !== null) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            if (timerInterval !== null) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            
+            // 画面スリープ防止ロックを解放
+            releaseWakeLock();
+
+            // 状態とデータをリセット
+            isStarted = false;
+            isPaused = false;
             startTime = null;
             lastTimestamp = null; 
-            startStopButton.textContent = '計測開始';
-            startStopButton.style.backgroundColor = '#e74c3c';
-            statusDiv.textContent = `計測停止しました。総走行距離: ${totalDistanceKm.toFixed(2)}km`;
+            pauseStart = null;
             
             // 最終表示更新
             distanceValue.innerHTML = `${totalDistanceKm.toFixed(2)}<span class="unit">km</span>`;
@@ -449,19 +584,52 @@
             } else {
                 avgSpeedValue.innerHTML = `0.0<span class="unit">km/h</span>`;
             }
-        }
+            
+            // 速度とタイム表示をリセット (UIに現在の値を残し、初期表示はリセットしない)
+            speedValueLarge.innerHTML = `0.0<span class="unit">km/h</span>`;
 
-        /** 計測の開始/停止を切り替える関数 */
-        function toggleTracking() {
-            if (isTracking) {
-                stopTracking();
+            // UI更新
+            updateButtonState();
+            statusDiv.textContent = `計測終了。総走行距離: ${totalDistanceKm.toFixed(2)}km`;
+        }
+        
+        /** ボタンの表示状態を現在の状態に基づいて更新する (NEW) */
+        function updateButtonState() {
+            startButton.style.display = 'none';
+            activeButtonContainer.style.display = 'none';
+            
+            if (!isStarted) {
+                // 初期状態 / 停止後
+                startButton.style.display = 'block';
+                startButton.textContent = '計測開始';
             } else {
-                startTracking();
+                // 計測開始済み (実行中 or 一時停止中)
+                activeButtonContainer.style.display = 'flex';
+                stopResetButton.textContent = '停止・リセット';
+                
+                if (isPaused) {
+                    // 一時停止中
+                    pauseResumeButton.textContent = '計測再開';
+                    pauseResumeButton.style.backgroundColor = '#2ecc71'; /* 緑 */
+                } else {
+                    // 実行中
+                    pauseResumeButton.textContent = '一時停止';
+                    pauseResumeButton.style.backgroundColor = '#f1c40f'; /* 黄色 */
+                }
             }
         }
 
         // イベントリスナーの設定
-        startStopButton.addEventListener('click', toggleTracking);
+        startButton.addEventListener('click', startTracking);
+        pauseResumeButton.addEventListener('click', () => {
+            if (!isPaused) {
+                pauseTracking();
+            } else {
+                resumeTracking();
+            }
+        });
+        stopResetButton.addEventListener('click', stopTracking);
+
 
         // 初期表示
         function initializeDisplay() {
@@ -471,8 +639,17 @@
             timeValue.textContent = `00:00:00`;
             speedValueLarge.innerHTML = `0.0<span class="unit">km/h</span>`;
         }
+        
         initializeDisplay();
+        updateButtonState(); // 初期ボタン状態をセット
 
+        // ページが非表示になったときにWake Lockを再取得するリスナー
+        document.addEventListener('visibilitychange', () => {
+            // 計測中で、かつ一時停止中でない場合にのみWake Lockを再要求する
+            if (wakeLock !== null && document.visibilityState === 'visible' && isStarted && !isPaused) {
+                requestWakeLock();
+            }
+        });
     </script>
 </body>
 </html>
